@@ -1,0 +1,294 @@
+#!/bin/bash
+
+# --------------------------------------------------
+# -------------- VARIABLES DECLARATION -------------
+# --------------------------------------------------
+
+# Default bold colours used in the script : feel free to modify them as you want.
+Color_Off='\033[0m'       # Text Reset
+BBlack='\033[1;30m'       # Black
+BRed='\033[1;31m'         # Red
+BGreen='\033[1;32m'       # Green
+BYellow='\033[1;33m'      # Yellow
+BBlue='\033[1;34m'        # Blue
+BPurple='\033[1;35m'      # Purple
+BCyan='\033[1;36m'        # Cyan
+BWhite='\033[1;37m'       # White
+
+# You may want to source a file containing your favourite colour codes.
+# I did not write the source option for safety matters.
+# Friendly reminder : NEVER SOURCE AN UNKNOWN/UNTRUSTED FILE
+
+# Well, don't touch this section, thanks :)
+version="v1.0"
+
+step=1
+step_total=2 # default : 2 LaTeX compilations for ToC building and correct labelling.
+
+glossary=false
+biblio=false
+open_pdf=false
+enable_info=false
+
+
+warnings_on=false
+
+# --------- FILTERS ---------
+# You can modify those filters to display what you need during compilation using regexp.
+
+main_filter='^!.*' 			# Main filter : looking for critical errors
+warnings_filter='^.*full.*' 	# "Warnings" filter : default, looking for over/underfull boxes.
+
+
+# --------------------------------------------------
+# -------------------- FUNCTIONS -------------------
+# --------------------------------------------------
+
+openpdf() {
+	#"My pdf opening command" 
+}
+
+print_info() {
+	echo "------------------------------------------------"
+	echo "This is a cLaTeX, a custom LaTeX compilation bash script"
+	echo "Clement Eliat, 2022"
+	echo -e "cLaTeX version : $version"
+	echo "------------------------------------------------"
+}
+
+
+print_help() {
+	echo "------------------------------------------------"
+	echo "cLaTeX help"
+	echo
+	echo "Usage : clatex [-option] {arguments}"
+	echo
+	echo "Available options"
+	echo -e "\t-h, --help     : displays help message and exits"
+	echo -e "\t-v, --version  : displays installed version and exits"
+	echo -e "\t-i, --info     : displays time and efficiency at the end of a compilation process"
+	echo -e "\t-b, --biblio   : builds bibliography on compilation *"
+	echo -e "\t-g, --glossary : builds glossaries on compilation *"
+	echo -e "\t-o, --open     : open pdf file after compilation *"
+	echo -e "\t-w, --warnings : displays also LaTeX warning messages according to "
+	echo -e "\t                 specific filters you can modify yourself in the"
+	echo -e "\t                 cLaTeX script source code"
+	echo
+	echo "* : These options are stackable on one flag (short options only)." 
+	echo "Please make sure to use -o at the end of the options stacked sequence" 
+	echo "(ex. clatex -bgo filename)."
+	echo 
+	echo "/!\ WARNINGS /!\ "
+	echo "- MacOS users : This script needs gdate (coreutils) to be installed to work properly."
+	echo "- Compatibility without gdate will be investigated soon."
+	echo "- The overall compatibility of this script has not been extensively tested yet."
+	echo
+	echo "Please contact me at clement.eliat@icloud.com or on GitLab/GitHub if"
+	echo "you have any question/problem."
+	echo "------------------------------------------------"
+}
+
+parse_options() {
+	
+	while test $# -gt 0
+	do
+		_key="$1"
+		case "$_key" in
+			-h | --help )
+				print_help
+				exit 0
+				;;
+			-v | --version )
+				print_info
+				exit 0
+				;;
+			-i | --info )
+				enable_info=true
+				shift
+				;;
+			-b | --biblio )
+				biblio=true
+				step_total=4
+				shift
+				;;
+			-g | --glossary )
+				glossary=true
+				step_total=4
+				shift
+				;;
+			-o | --open )
+				open_pdf=true
+				shift
+				;;
+			-bg | -gb | --biblioglossary | --glossarybiblio )
+				glossary=true
+				biblio=true
+				step_total=6
+				shift
+				;;
+			-bgo | -gbo )
+				glossary=true
+				biblio=true
+				open_pdf=true
+				step_total=6
+				shift
+				;;
+			-w | --warnings )
+				warnings_on=true
+				shift
+				;;
+			-* | --*= ) # unsupported flags
+				echo "${BRed}Error: Unsupported flag $1${Color_Off} (usage -h | --help)." >&2
+				exit 1
+				shift
+				;;
+			*) # preserve positional arguments
+				PARAMS="$PARAMS $1"
+				shift
+		esac
+	done
+}
+
+inc_step() {
+	step=$((step+1))
+}
+
+latex_pass() { # Standard pdflatex compilation process
+	echo -e "${BCyan}Step $step/$step_total : pdflatex${Color_Off}"
+	: | pdflatex --halt-on-error "$@" <&- |
+	tee >(
+		if "$warnings_on"; then
+			grep --color=auto "$warnings_filter" -A2 >&2 		# grep for a pattern, then sends it to stdout (file descriptor &2)
+			# INSERT HERE YOUR OTHER FILTERS (YOU GOTTA 
+			# FIGURE OUT THE SYNTAX THOUGH, I'M NOT SURE 
+			# YET HOW TO DO IT :) )
+		else
+		 	cat >/dev/null
+		fi
+	) |
+	{ ! grep --color=auto "$main_filter" -A10; }				# Inverted grep process : returns 0 if nothing is found and this is
+																# actually what we need for a proper compilation process to happen ! 
+
+}
+
+bibtex_pass() { # bibtex compilation process
+	echo -e "${BCyan}Step $step/$step_total : bibtex${Color_Off}"
+	: | bibtex "$@" | \
+	{ ! grep --color=auto '^!.*' -A200; }
+}
+
+glossaries_pass() { # makeglossaries compilation process
+	echo -e "${BCyan}Step $step/$step_total : makeglossaries${Color_Off}"
+	: | makeglossaries "$@" | \
+	{ ! grep --color=auto '^!.*' -A200; }
+}
+
+format_time_s_ms() {											# Usage : format_time_s_ms name start end
+	name="$1"													# Outputs a time difference in s and ms based on the %s%N format
+	start="$2"													# (seconds and nanoseconds elapsed since the Epoch, 01/01/1970, 00:00 UTC)
+	end="$3"													# and stores it in name_seconds and name_milliseconds variables.
+	total_time=$((end-start))									# name_total_time is used for statistics if displayed by user, but is exactly
+	seconds=$((total_time/1000000000))							# the same value than total_time.
+	milliseconds=$(((total_time-seconds*1000000000)/1000000))
+	printf -v "$(printf "%s_total_time" $name)" '%i' $total_time
+	printf -v "$(printf "%s_seconds" $name)" '%f' $seconds
+	printf -v "$(printf "%s_ms" $name)" '%f' $milliseconds	
+}
+
+
+# --------------------------------------------------
+# ---------------------- MAIN ----------------------
+# --------------------------------------------------
+
+# --------------------- START ----------------------
+
+script_start=$(date +%s%N)
+
+# ---------------- OPTIONS PARSING -----------------
+
+parse_options "$@"
+
+# ------------------- filename ---------------------
+
+test $# -gt 0 && eval filename=\${$#} # Create filename variable only if there was provided some argument. NOTE : I do not like the eval here, 1st change to come in v1.1
+
+
+test -z "$filename" && { # Test that the filename was provided
+	echo "It's mandatory to provide the filename of tex source as first argument!";
+	exit 103;
+}
+
+
+test -f "$filename" || test -f "$filename.tex" || { # Test the existence of the file provided
+	echo "Error. File '$filename' does not exist!";
+	exit 104;
+}
+
+
+filename=$(echo "$filename" | cut -f 1 -d '.') # Remove extension for further compatibility (i.e. opening pdf)
+
+
+# ------------------ COMPILATION -------------------
+
+echo -e "${BYellow}Compilation starting...${Color_Off}"
+
+compilation_start=$(date +%s%N) # for statistics
+
+latex_pass $filename
+EVERYTHING_SUCCEEDED=$?
+
+
+inc_step
+while (( $EVERYTHING_SUCCEEDED == 0 && $step <= $step_total )); do
+	if [[ "$glossary" = true ]]; then
+		glossaries_pass $filename
+		EVERYTHING_SUCCEEDED=$?
+		inc_step
+		latex_pass $filename
+		EVERYTHING_SUCCEEDED=$?
+		inc_step
+		glossary=false
+	elif [[ "$biblio" = true ]]; then
+		bibtex_pass $filename
+		EVERYTHING_SUCCEEDED=$?
+		inc_step
+		latex_pass $filename
+		inc_step
+		EVERYTHING_SUCCEEDED=$?
+		biblio=false
+	else
+	latex_pass $filename
+	EVERYTHING_SUCCEEDED=$?
+	inc_step
+	fi
+done
+
+if test ! $EVERYTHING_SUCCEEDED -eq 0; then
+	echo -e "${BRed}Fatal error. Exiting the program.${Color_Off}"
+	exit 10
+else
+	echo -e "${BGreen}Compilation successful.${Color_Off}"
+	compilation_end=$(date +%s%N) # For statistics
+
+	if [[ "$open_pdf" = true ]]; then
+		echo "Now opening $filename.pdf."
+		openpdf $filename.pdf 					# WARNING : I know this syntax is absolutely not portable. Also on the list for v1.1.
+	fi
+	
+	if [[ "$enable_info" = true ]]; then # for statistics
+		script_end=$(date +%s%N) 
+		format_time_s_ms script $script_start $script_end 
+		format_time_s_ms compilation $compilation_start $compilation_end
+		efficiency=$(bc <<< "scale=9; $compilation_total_time / $script_total_time * 100")
+
+		echo "-------------------- INFOS --------------------"
+		env printf "Compilation time | %02.0f,%03.0f s\n" $compilation_seconds $compilation_ms 		# Compilation only time
+		env printf "Elapsed time     | %02.0f,%03.0f s\n" $script_seconds $script_ms 				# Total running time
+		env printf "Efficiency       | %02.03f %%\n" $efficiency									# Compilation time over total time ratio
+
+		# Note the 'env printf' here : there is a bug within the built-in bash 'printf' 
+		# that does not like the ',' character in numbers. As a French format user, 
+		# and for all my fellows, this may cause bugs on the 'printf' line. 
+
+	fi
+fi
